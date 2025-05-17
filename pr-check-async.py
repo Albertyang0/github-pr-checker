@@ -180,7 +180,7 @@ async def process_all_prs(session):
         else:
             for col, value in zip(
                 [col_author, col_status, col_external_flag, col_external_content],
-                ["Invalid URL"] * 4):
+                ["N/A"] * 4):
                 ws.cell(row=i, column=col, value=value).font = font
                 ws.cell(row=i, column=col).fill = gray_fill
 
