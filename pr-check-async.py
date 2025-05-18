@@ -116,6 +116,31 @@ def is_old_unmerged_no_conflicts(created_at, merged_status, mergeable_state, day
     except Exception:
         return "Error"
 
+# Print a simple ASCII table with auto-adjusted column widths
+def print_table(headers, rows):
+    all_rows = [headers] + rows
+    col_widths = [max(len(str(row[i])) for row in all_rows) for i in range(len(headers))]
+
+    def print_line():
+        print("+" + "+".join("-" * (w + 2) for w in col_widths) + "+")
+
+    def print_row(row):
+        formatted_cells = []
+        for i, val in enumerate(row):
+            cell = str(val)
+            if i == 0:
+                formatted_cells.append(cell.ljust(col_widths[i]))  # Left-align first column
+            else:
+                formatted_cells.append(cell.rjust(col_widths[i]))  # Right-align other columns
+        print("| " + " | ".join(formatted_cells) + " |")
+
+    print_line()
+    print_row(headers)
+    print_line()
+    for row in rows:
+        print_row(row)
+    print_line()
+
 # === ASYNC TASK: Fetch PR status and comments ===
 
 async def fetch_status(session, sem, pr_url, retries=2, retry_delay=2):
@@ -204,15 +229,13 @@ async def process_all_prs(session):
     col_author = ws.max_column + 1
     col_status = col_author + 1
     col_old_unmerged_no_conflicts = col_status + 1
-    col_external_flag = col_old_unmerged_no_conflicts + 1
-    col_external_content = col_external_flag + 1
+    col_external_content = col_old_unmerged_no_conflicts + 1
 
     # Set headers
     ws.cell(row=1, column=1, value="PR URL").font = font
     ws.cell(row=1, column=col_author, value="Author").font = font
     ws.cell(row=1, column=col_status, value="Merged Status").font = font
     ws.cell(row=1, column=col_old_unmerged_no_conflicts, value="Old & Unmerged & No Conflicts").font = font
-    ws.cell(row=1, column=col_external_flag, value="Has External Comment").font = font
     ws.cell(row=1, column=col_external_content, value="External Comments Content").font = font
 
     sem = asyncio.Semaphore(CONCURRENT_REQUESTS)
@@ -228,8 +251,8 @@ async def process_all_prs(session):
             row_to_pr[i] = pr_url
         else:
             for col, value in zip(
-                [col_author, col_status, col_old_unmerged_no_conflicts, col_external_flag, col_external_content],
-                ["N/A"] * 5):
+                [col_author, col_status, col_old_unmerged_no_conflicts, col_external_content],
+                ["N/A"] * 4):
                 ws.cell(row=i, column=col, value=value).font = font
                 ws.cell(row=i, column=col).fill = gray_fill
 
@@ -277,8 +300,10 @@ async def process_all_prs(session):
             ws.cell(row=row_idx, column=col_status, value=result["merged_status"]).font = font
             ws.cell(row=row_idx, column=col_status).fill = green_fill if result["merged_status"].startswith("Merged") else red_fill
             ws.cell(row=row_idx, column=col_old_unmerged_no_conflicts, value=old_unmerged_no_conflicts_flag).font = font
-            ws.cell(row=row_idx, column=col_external_flag, value=result["has_external_comment"]).font = font
             ws.cell(row=row_idx, column=col_external_content, value=clean_illegal_chars(result["external_comments"])).font = font
+
+            # Save the flag to unique_prs
+            result["old_unmerged_no_conflicts_flag"] = old_unmerged_no_conflicts_flag
 
     # Save file and output summary
     if output_dir:
@@ -290,14 +315,20 @@ async def process_all_prs(session):
         os.startfile(result_path)
 
         # === STATISTICS OUTPUT ===
+        old_unmerged_no_conflicts_count = sum(1 for v in unique_prs.values() if v and v.get("old_unmerged_no_conflicts_flag") == "Yes")
         merged_count = sum(1 for v in unique_prs.values() if v and v["merged_status"].startswith("Merged"))
         total_count = len(unique_prs)
-        external_comment_count = sum(1 for v in unique_prs.values() if v and v["has_external_comment"] == "Yes")
 
-        print("\n📊 Summary Statistics:")
-        print(f"🔢 Total PRs: {total_count}")
-        print(f"✅ Merged PRs: {merged_count}")
-        print(f"💬 PRs with external comments: {external_comment_count}")
+        # Assemble the summary data
+        summary = [
+            ["Total PRs", total_count],
+            ["Merged PRs", merged_count],
+            ["PRs open for more than 1 week", old_unmerged_no_conflicts_count]
+        ]
+        headers = ["Metric", "Value"]
+
+        print("\n📊 Summary Statistics:\n")
+        print_table(headers, summary)
     else:
         print("\n⚠️ No PRs processed, no output generated.")
 
@@ -320,5 +351,5 @@ if __name__ == "__main__":
     finally:
         loop.close()
         end_time = time.time()
-        print(f"\n📦 Folders created: {len(os.listdir(OUTPUT_BASE_DIR))}")
         print(f"⏱️ Execution time: {end_time - start_time:.2f} seconds")
+        print("\n")
