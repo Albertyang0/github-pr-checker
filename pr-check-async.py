@@ -96,6 +96,26 @@ def auto_adjust_column_width(ws):
                 pass
         ws.column_dimensions[column].width = max_length + 2
 
+# Check if PR is older than threshold, unmerged, and has no conflicts.
+def is_old_unmerged_no_conflicts(created_at, merged_status, mergeable_state, days_threshold=7):
+    try:
+        if created_at:
+            from datetime import datetime, timezone
+            pr_create_time = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            days_old = (datetime.now(timezone.utc) - pr_create_time).days
+            if (
+                days_old > days_threshold and
+                not merged_status.startswith("Merged") and
+                mergeable_state == "clean"
+            ):
+                return "Yes"
+            else:
+                return "No"
+        else:
+            return "No"
+    except Exception:
+        return "Error"
+
 # === ASYNC TASK: Fetch PR status and comments ===
 
 async def fetch_status(session, sem, pr_url, retries=2, retry_delay=2):
@@ -164,7 +184,8 @@ async def fetch_status(session, sem, pr_url, retries=2, retry_delay=2):
             comment_text = "\n---\n".join(external_comments) if external_comments else "None"
 
             write_log_entry(pr_url, status, external_flag)
-            return pr_url, status, external_flag, comment_text, author_login
+            created_at = pr_data.get("created_at")
+            return pr_url, status, external_flag, comment_text, author_login, created_at, mergeable_state
         except Exception as e:
             # If any unexpected error occurs, return error information
             return pr_url, "Error", "Error", str(e), "Unknown"
@@ -182,13 +203,15 @@ async def process_all_prs(session):
     # Determine new columns for output
     col_author = ws.max_column + 1
     col_status = col_author + 1
-    col_external_flag = col_status + 1
+    col_old_unmerged_no_conflicts = col_status + 1
+    col_external_flag = col_old_unmerged_no_conflicts + 1
     col_external_content = col_external_flag + 1
 
     # Set headers
     ws.cell(row=1, column=1, value="PR URL").font = font
     ws.cell(row=1, column=col_author, value="Author").font = font
     ws.cell(row=1, column=col_status, value="Merged Status").font = font
+    ws.cell(row=1, column=col_old_unmerged_no_conflicts, value="Old & Unmerged & No Conflicts").font = font
     ws.cell(row=1, column=col_external_flag, value="Has External Comment").font = font
     ws.cell(row=1, column=col_external_content, value="External Comments Content").font = font
 
@@ -205,8 +228,8 @@ async def process_all_prs(session):
             row_to_pr[i] = pr_url
         else:
             for col, value in zip(
-                [col_author, col_status, col_external_flag, col_external_content],
-                ["N/A"] * 4):
+                [col_author, col_status, col_old_unmerged_no_conflicts, col_external_flag, col_external_content],
+                ["N/A"] * 5):
                 ws.cell(row=i, column=col, value=value).font = font
                 ws.cell(row=i, column=col).fill = gray_fill
 
@@ -231,21 +254,29 @@ async def process_all_prs(session):
             progress.update(task_id, advance=1)
 
     # Store results
-    for pr_url, status, external_flag, content, author_login in results:
+    for pr_url, status, external_flag, content, author_login, created_at, mergeable_state in results:
         unique_prs[pr_url] = {
             "merged_status": status,
             "has_external_comment": external_flag,
             "external_comments": content,
-            "author": author_login
+            "author": author_login,
+            "created_at": created_at,
+            "mergeable_state": mergeable_state
         }
 
     # Write results to Excel
     for row_idx, pr_url in row_to_pr.items():
         result = unique_prs.get(pr_url)
+        old_unmerged_no_conflicts_flag = is_old_unmerged_no_conflicts(
+            result.get("created_at"),
+            result.get("merged_status"),
+            result.get("mergeable_state")
+        )
         if result:
             ws.cell(row=row_idx, column=col_author, value=result["author"]).font = font
             ws.cell(row=row_idx, column=col_status, value=result["merged_status"]).font = font
             ws.cell(row=row_idx, column=col_status).fill = green_fill if result["merged_status"].startswith("Merged") else red_fill
+            ws.cell(row=row_idx, column=col_old_unmerged_no_conflicts, value=old_unmerged_no_conflicts_flag).font = font
             ws.cell(row=row_idx, column=col_external_flag, value=result["has_external_comment"]).font = font
             ws.cell(row=row_idx, column=col_external_content, value=clean_illegal_chars(result["external_comments"])).font = font
 
