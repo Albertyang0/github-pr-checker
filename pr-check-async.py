@@ -98,9 +98,24 @@ def auto_adjust_column_width(ws):
 
 # === ASYNC TASK: Fetch PR status and comments ===
 
-async def fetch_status(session, sem, pr_url):
+async def fetch_status(session, sem, pr_url, retries=2, retry_delay=2):
+    """
+    Fetch PR metadata and comments from GitHub with automatic retries
+    if mergeable_state is 'unknown'.
+
+    Args:
+        session: aiohttp ClientSession instance
+        sem: asyncio.Semaphore for concurrency control
+        pr_url: PR URL string
+        retries: Number of retries if mergeable_state is 'unknown' (default 2)
+        retry_delay: Seconds to wait between retries (default 2)
+
+    Returns:
+        Tuple with PR URL, merged status, external comment flag, external comments, author login
+    """
     async with sem:
         try:
+            # Parse PR URL
             parts = pr_url.split("/")
             if len(parts) < 7:
                 return pr_url, "Invalid URL", "Skipped", "Skipped", "Unknown"
@@ -109,24 +124,34 @@ async def fetch_status(session, sem, pr_url):
             pr_api = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
             comment_api = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
 
-            # Fetch PR metadata
-            async with session.get(pr_api) as pr_resp:
-                pr_data = await pr_resp.json()
-                if pr_data.get("state") == "closed" and not pr_data.get("merged"):
-                    status = "Closed (Not merged)"
-                else:
-                    status = "Merged" if pr_data.get("merged") else "Not merged"
+            # === Retry logic for mergeable_state ===
+            mergeable_state = None
+            pr_data = None
+            for attempt in range(retries):
+                async with session.get(pr_api) as pr_resp:
+                    pr_data = await pr_resp.json()
                     mergeable_state = pr_data.get("mergeable_state")
-                    if mergeable_state and not pr_data.get("merged"):
-                        status += f" ({MERGEABLE_STATE_MAPPING.get(mergeable_state, mergeable_state)})"
-                author_login = pr_data.get("user", {}).get("login", "Unknown")
+                    # If the state is not 'unknown', break and use this value
+                    if mergeable_state != "unknown":
+                        break
+                    await asyncio.sleep(retry_delay)  # Wait before retrying
 
-            await asyncio.sleep(API_DELAY)
+            # Determine PR status based on API response
+            if pr_data.get("state") == "closed" and not pr_data.get("merged"):
+                status = "Closed (Not merged)"
+            else:
+                status = "Merged" if pr_data.get("merged") else "Not merged"
+                if mergeable_state and not pr_data.get("merged"):
+                    status += f" ({MERGEABLE_STATE_MAPPING.get(mergeable_state, mergeable_state)})"
+            author_login = pr_data.get("user", {}).get("login", "Unknown")
 
-            # Fetch PR comments
+            await asyncio.sleep(API_DELAY)  # Respect API rate limits
+
+            # === Fetch PR comments ===
             async with session.get(comment_api) as cmt_resp:
                 comments = await cmt_resp.json()
 
+            # Filter external comments (not from excluded users, not bots, no excluded keywords)
             external_comments = [
                 c.get("body", "") for c in comments
                 if (login := c.get("user", {}).get("login"))
@@ -141,6 +166,7 @@ async def fetch_status(session, sem, pr_url):
             write_log_entry(pr_url, status, external_flag)
             return pr_url, status, external_flag, comment_text, author_login
         except Exception as e:
+            # If any unexpected error occurs, return error information
             return pr_url, "Error", "Error", str(e), "Unknown"
 
 # === ASYNC MAIN: Process all PRs in Excel ===
