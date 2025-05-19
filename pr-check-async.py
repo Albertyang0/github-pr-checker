@@ -220,7 +220,7 @@ async def fetch_status(session, sem, pr_url, retries=2, retry_delay=2):
 async def process_all_prs(session):
     wb = openpyxl.load_workbook(INPUT_PATH)
     ws = wb.active
-    font = Font(name="Segoe UI")
+    font = Font(name="DengXian", size=11)
     green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
     red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
     gray_fill = PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid")
